@@ -1,5 +1,20 @@
 # Optimized verion, close to radix tree by perf but not simpler anymore.
-#
+
+# Summary of algorithmic optimizations applied to ndsmt.py:
+# 1. Skip-ahead in _insert: When descending into an empty subtree or a
+#    compressed node, compute the effective level where paths actually
+#    diverge (using XOR of batch endpoints and existing node key) and
+#    jump directly there. Eliminates O(depth) recursive calls per singleton leaf.
+# 2. Binary search for batch split: Since sorted keys partition cleanly
+#    (all bit-0 items before bit-1 items), use binary search O(log n)
+#    instead of linear scan O(n) to find the split point.
+# 3. Precomputed work levels in verification: Compute all merge levels
+#    from adjacent key XORs upfront (Cartesian tree property: cascading
+#    merges produce the same level set). Bulk-shift keys between work levels,
+#    skipping 200+ empty levels.
+# 4. Single-pass verification: Compute both old_root (empty leaves) and
+#    new_root (actual leaves) in a single synchronized pass
+
 # Path-compressed Sparse Merkle Tree (SMT) with non-deletion (consistency) proofs.
 # Specification: Unicity Yellowpaper, Appendix - Sparse Merkle Trees.
 #
