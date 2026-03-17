@@ -114,7 +114,7 @@ def _bkey(level, key):
 # ---------------------------------------------------------------------------
 
 class SparseMerkleTree:
-    def __init__(self, db_path, depth=256, map_size=1024**4, cache_levels=32):
+    def __init__(self, db_path="./smt-db", depth=256, map_size=1024**4, cache_levels=32):
         self.depth = depth
         self.db_path = db_path
         os.makedirs(db_path, exist_ok=True)

@@ -4,6 +4,8 @@ import time
 import os
 import sys
 import hashlib
+import tempfile
+import shutil
 
 import matplotlib
 
@@ -15,7 +17,10 @@ from pympler import asizeof
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from nc_ndsmt import SparseMerkleTree as SMT_ncndsmt, verify_consistency as vc_ncndsmt
+from ndsmt_lmdb2 import (
+    SparseMerkleTree as SMT_ndsmt_lmdb,
+    verify_consistency as vc_ndsmt_lmdb,
+)
 from ndsmt import SparseMerkleTree as SMT_ndsmt, verify_consistency as vc_ndsmt
 from ndsmt_opt import (
     SparseMerkleTree as SMT_ndsmt_opt,
@@ -38,7 +43,14 @@ def to_int(aa):
 def run_benchmark(
     module_name, SMT, verify_consistency, depth=256, batch_size=10000, num_rounds=60
 ):
-    smt = SMT(depth=depth)
+    # database backed one is stateful, we need to clean up between runs
+    if module_name == "ndsmt-lmdb":
+        tmpdir = tempfile.mkdtemp()
+        smt = SMT(depth=depth, db_path=tmpdir)
+        cleanup = lambda: shutil.rmtree(tmpdir)
+    else:
+        smt = SMT(depth=depth)
+        cleanup = None
     total_leaves = 0
 
     results = {
@@ -54,7 +66,8 @@ def run_benchmark(
         batch = []
         for i in range(batch_size):
             rk = hash(f"r{rnd}_i{i}") % (2**depth)
-            rv = to_int(f"V{rk}")
+            rv = hashlib.sha256(b"Value" + rk.to_bytes(32)).digest()
+            # rv = to_int(f"V{rk}")
             batch.append((rk, rv))
 
         old_root = smt.get_root()
@@ -84,17 +97,20 @@ def run_benchmark(
         results["memory_mb"].append(mem_mb)
         results["proof_size_mb"].append(prf_size)
 
+    if cleanup:
+        cleanup()
+
     return results
 
 
 def main():
     # batch_sizes = [100, 500, 1000, 5000]
-    batch_sizes = [1000]
+    batch_sizes = [10000]
     num_rounds = 30
     depth = 256
 
     implementations = [
-        ("nc-ndsmt", SMT_ncndsmt, vc_ncndsmt),
+        ("ndsmt-lmdb", SMT_ndsmt_lmdb, vc_ndsmt_lmdb),
         ("ndsmt", SMT_ndsmt, vc_ndsmt),
         ("ndsmt_opt", SMT_ndsmt_opt, vc_ndsmt_opt),
         ("ndrsmt", SMT_ndrsmt, vc_ndrsmt),
@@ -119,17 +135,17 @@ def main():
             all_results[bs][name] = results
 
     colors = {
-        "nc-ndsmt": "orange",
+        "ndsmt-lmdb": "orange",
         "ndsmt": "blue",
         "ndsmt_opt": "green",
         "ndrsmt": "red",
     }
-    markers = {"nc-ndsmt": "x", "ndsmt": "o", "ndsmt_opt": "s", "ndrsmt": "^"}
-    linestyles = {"nc-ndsmt": ":", "ndsmt": "-", "ndsmt_opt": "--", "ndrsmt": "-."}
+    markers = {"ndsmt-lmdb": "x", "ndsmt": "o", "ndsmt_opt": "s", "ndrsmt": "^"}
+    linestyles = {"ndsmt-lmdb": ":", "ndsmt": "-", "ndsmt_opt": "--", "ndrsmt": "-."}
 
     plt.figure(figsize=(12, 8))
     for bs in batch_sizes:
-        for name in ["nc-ndsmt", "ndsmt", "ndsmt_opt", "ndrsmt"]:
+        for name in ["ndsmt-lmdb", "ndsmt", "ndsmt_opt", "ndrsmt"]:
             x = all_results[bs][name]["total_leaves"]
             y = all_results[bs][name]["ins_per_sec"]
             plt.plot(
@@ -155,7 +171,7 @@ def main():
     plt.figure(figsize=(14, 10))
 
     plt.subplot(2, 2, 1)
-    for name in ["nc-ndsmt", "ndsmt", "ndsmt_opt", "ndrsmt"]:
+    for name in ["ndsmt-lmdb", "ndsmt", "ndsmt_opt", "ndrsmt"]:
         x = all_results[batch_sizes[0]][name]["total_leaves"]
         y = all_results[batch_sizes[0]][name]["insert_speed"]
         plt.plot(x, y, marker=markers[name], color=colors[name], label=name)
@@ -166,7 +182,7 @@ def main():
     plt.grid(True, alpha=0.3)
 
     plt.subplot(2, 2, 2)
-    for name in ["nc-ndsmt", "ndsmt", "ndsmt_opt", "ndrsmt"]:
+    for name in ["ndsmt-lmdb", "ndsmt", "ndsmt_opt", "ndrsmt"]:
         x = all_results[batch_sizes[0]][name]["total_leaves"]
         y = all_results[batch_sizes[0]][name]["verify_speed"]
         plt.plot(x, y, marker=markers[name], color=colors[name], label=name)
@@ -177,7 +193,7 @@ def main():
     plt.grid(True, alpha=0.3)
 
     plt.subplot(2, 2, 3)
-    for name in ["nc-ndsmt", "ndsmt", "ndsmt_opt", "ndrsmt"]:
+    for name in ["ndsmt-lmdb", "ndsmt", "ndsmt_opt", "ndrsmt"]:
         x = all_results[batch_sizes[0]][name]["total_leaves"]
         y = all_results[batch_sizes[0]][name]["proof_size_mb"]
         plt.plot(
@@ -196,7 +212,7 @@ def main():
     plt.grid(True, alpha=0.3)
 
     plt.subplot(2, 2, 4)
-    for name in ["nc-ndsmt", "ndsmt", "ndsmt_opt", "ndrsmt"]:
+    for name in ["ndsmt-lmdb", "ndsmt", "ndsmt_opt", "ndrsmt"]:
         x = all_results[batch_sizes[0]][name]["total_leaves"]
         y = all_results[batch_sizes[0]][name]["memory_mb"]
         plt.plot(x, y, marker=markers[name], color=colors[name], label=name)
@@ -214,7 +230,7 @@ def main():
     print("\n=== Summary ===", file=sys.stderr)
     for bs in batch_sizes:
         print(f"\nBatch size {bs}:", file=sys.stderr)
-        for name in ["nc-ndsmt", "ndsmt", "ndsmt_opt", "ndrsmt"]:
+        for name in ["ndsmt-lmdb", "ndsmt", "ndsmt_opt", "ndrsmt"]:
             r = all_results[bs][name]
             final_ins = r["ins_per_sec"][-1]
             final_mem = r["memory_mb"][-1]
