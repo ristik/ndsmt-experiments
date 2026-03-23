@@ -27,6 +27,7 @@ from ndsmt_opt import (
     verify_consistency as vc_ndsmt_opt,
 )
 from ndrsmt import SparseMerkleTree as SMT_ndrsmt, verify_consistency as vc_ndrsmt
+from ndrsmt2 import SparseMerkleTree as SMT_ndrsmt2, verify_consistency as vc_ndrsmt2
 
 
 def to_int(aa):
@@ -41,7 +42,7 @@ def to_int(aa):
 
 
 def run_benchmark(
-    module_name, SMT, verify_consistency, depth=256, batch_size=10000, num_rounds=60
+    module_name, SMT, verify_consistency, depth=256, batch_size=1000, num_rounds=60
 ):
     # database backed one is stateful, we need to clean up between runs
     if module_name == "ndsmt-lmdb":
@@ -114,6 +115,7 @@ def main():
         ("ndsmt", SMT_ndsmt, vc_ndsmt),
         ("ndsmt_opt", SMT_ndsmt_opt, vc_ndsmt_opt),
         ("ndrsmt", SMT_ndrsmt, vc_ndrsmt),
+        ("ndrsmt2", SMT_ndrsmt2, vc_ndrsmt2),
     ]
 
     all_results = {}
@@ -139,13 +141,14 @@ def main():
         "ndsmt": "blue",
         "ndsmt_opt": "green",
         "ndrsmt": "red",
+        "ndrsmt2": "purple",
     }
-    markers = {"ndsmt-lmdb": "x", "ndsmt": "o", "ndsmt_opt": "s", "ndrsmt": "^"}
-    linestyles = {"ndsmt-lmdb": ":", "ndsmt": "-", "ndsmt_opt": "--", "ndrsmt": "-."}
+    markers = {"ndsmt-lmdb": "x", "ndsmt": "o", "ndsmt_opt": "s", "ndrsmt": "^", "ndrsmt2": "D"}
+    linestyles = {"ndsmt-lmdb": ":", "ndsmt": "-", "ndsmt_opt": "--", "ndrsmt": "-.", "ndrsmt2": (0, (3, 1, 1, 1))}
 
     plt.figure(figsize=(12, 8))
     for bs in batch_sizes:
-        for name in ["ndsmt-lmdb", "ndsmt", "ndsmt_opt", "ndrsmt"]:
+        for name in ["ndsmt-lmdb", "ndsmt", "ndsmt_opt", "ndrsmt", "ndrsmt2"]:
             x = all_results[bs][name]["total_leaves"]
             y = all_results[bs][name]["ins_per_sec"]
             plt.plot(
@@ -171,7 +174,7 @@ def main():
     plt.figure(figsize=(14, 10))
 
     plt.subplot(2, 2, 1)
-    for name in ["ndsmt-lmdb", "ndsmt", "ndsmt_opt", "ndrsmt"]:
+    for name in ["ndsmt-lmdb", "ndsmt", "ndsmt_opt", "ndrsmt", "ndrsmt2"]:
         x = all_results[batch_sizes[0]][name]["total_leaves"]
         y = all_results[batch_sizes[0]][name]["insert_speed"]
         plt.plot(x, y, marker=markers[name], color=colors[name], label=name)
@@ -182,7 +185,7 @@ def main():
     plt.grid(True, alpha=0.3)
 
     plt.subplot(2, 2, 2)
-    for name in ["ndsmt-lmdb", "ndsmt", "ndsmt_opt", "ndrsmt"]:
+    for name in ["ndsmt-lmdb", "ndsmt", "ndsmt_opt", "ndrsmt", "ndrsmt2"]:
         x = all_results[batch_sizes[0]][name]["total_leaves"]
         y = all_results[batch_sizes[0]][name]["verify_speed"]
         plt.plot(x, y, marker=markers[name], color=colors[name], label=name)
@@ -193,7 +196,7 @@ def main():
     plt.grid(True, alpha=0.3)
 
     plt.subplot(2, 2, 3)
-    for name in ["ndsmt-lmdb", "ndsmt", "ndsmt_opt", "ndrsmt"]:
+    for name in ["ndsmt-lmdb", "ndsmt", "ndsmt_opt", "ndrsmt", "ndrsmt2"]:
         x = all_results[batch_sizes[0]][name]["total_leaves"]
         y = all_results[batch_sizes[0]][name]["proof_size_mb"]
         plt.plot(
@@ -212,7 +215,7 @@ def main():
     plt.grid(True, alpha=0.3)
 
     plt.subplot(2, 2, 4)
-    for name in ["ndsmt-lmdb", "ndsmt", "ndsmt_opt", "ndrsmt"]:
+    for name in ["ndsmt-lmdb", "ndsmt", "ndsmt_opt", "ndrsmt", "ndrsmt2"]:
         x = all_results[batch_sizes[0]][name]["total_leaves"]
         y = all_results[batch_sizes[0]][name]["memory_mb"]
         plt.plot(x, y, marker=markers[name], color=colors[name], label=name)
@@ -230,7 +233,7 @@ def main():
     print("\n=== Summary ===", file=sys.stderr)
     for bs in batch_sizes:
         print(f"\nBatch size {bs}:", file=sys.stderr)
-        for name in ["ndsmt-lmdb", "ndsmt", "ndsmt_opt", "ndrsmt"]:
+        for name in ["ndsmt-lmdb", "ndsmt", "ndsmt_opt", "ndrsmt", "ndrsmt2"]:
             r = all_results[bs][name]
             final_ins = r["ins_per_sec"][-1]
             final_mem = r["memory_mb"][-1]

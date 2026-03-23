@@ -13,7 +13,8 @@ import matplotlib.pyplot as plt
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from ndrsmt import SparseMerkleTree, verify_consistency
+from ndrsmt import SparseMerkleTree as SMT_ndrsmt, verify_consistency as vc_ndrsmt
+from ndrsmt2 import SparseMerkleTree as SMT_ndrsmt2, verify_consistency as vc_ndrsmt2
 
 
 def to_int(aa):
@@ -25,11 +26,10 @@ def to_int(aa):
         return int.from_bytes(h.digest(), byteorder="big")
 
 
-def run_measurement(batch_size, pre_insert_count, depth=256):
-    # Create fresh tree
-    smt = SparseMerkleTree(depth=depth)
+def run_measurement(SMT, verify_consistency, batch_size, pre_insert_count, depth=256):
+    smt = SMT(depth=depth)
 
-    # Pre-fill to equal state - use separate key space
+    # Pre-fill - use separate key space
     pre_batch = []
     for i in range(pre_insert_count):
         rk = hash(f"pre_i{i}") % (2**depth)
@@ -38,21 +38,19 @@ def run_measurement(batch_size, pre_insert_count, depth=256):
 
     smt.batch_insert(pre_batch)
 
-    # Now measure throughput for new batch - use different key space
+    # Measure throughput for new batch - use different key space
     batch = []
     for i in range(batch_size):
         rk = hash(f"meas_i{i}") % (2**depth)
         rv = to_int(f"Vmeas{rk}")
         batch.append((rk, rv))
 
-    # Get root BEFORE insert
     pre_root = smt.get_root()
 
     t0 = time.time()
     b, proof = smt.batch_insert(batch)
     t_insert = time.time() - t0
 
-    # Verify - get root AFTER
     new_root = smt.get_root()
 
     ok = verify_consistency(proof, pre_root, new_root, b, depth)
@@ -71,62 +69,47 @@ def main():
     depth = 256
     num_trials = 3
 
+    implementations = [
+        ("ndrsmt",  SMT_ndrsmt,  vc_ndrsmt,  "red",    "^", "-"),
+        ("ndrsmt2", SMT_ndrsmt2, vc_ndrsmt2, "purple", "D", "--"),
+    ]
+
     print(
         f"Pre-inserting {pre_insert_count} leaves before each measurement",
         file=sys.stderr,
     )
-    print(f"{'batch_size':>12} {'throughput (leaves/sec)':>25}", file=sys.stderr)
-    print("-" * 40, file=sys.stderr)
 
-    results = {}
-    for bs in batch_sizes:
-        trials = []
-        for trial in range(num_trials):
-            throughput = run_measurement(bs, pre_insert_count, depth)
-            trials.append(throughput)
+    all_results = {}
+    for impl_name, SMT, verify_consistency, _, _, _ in implementations:
+        print(f"\n{'batch_size':>12} {'throughput (leaves/sec)':>25}  [{impl_name}]", file=sys.stderr)
+        print("-" * 50, file=sys.stderr)
+        all_results[impl_name] = {}
+        for bs in batch_sizes:
+            trials = [run_measurement(SMT, verify_consistency, bs, pre_insert_count, depth)
+                      for _ in range(num_trials)]
+            avg = sum(trials) / len(trials)
+            all_results[impl_name][bs] = avg
+            print(f"{bs:>12} {avg:>25.0f}", file=sys.stderr)
 
-        avg_throughput = sum(trials) / len(trials)
-        results[bs] = avg_throughput
-        print(f"{bs:>12} {avg_throughput:>25.0f}", file=sys.stderr)
-
-    # Plot - batch size on x-axis (equal spacing), throughput on y-axis
+    # Plot
     plt.figure(figsize=(10, 6))
-
-    batch_sizes = list(results.keys())
-    throughputs = list(results.values())
-
-    # Use categorical x-axis with equal spacing
     x_positions = range(len(batch_sizes))
 
-    plt.plot(x_positions, throughputs, "bo-", linewidth=2, markersize=8)
+    for impl_name, _, _, color, marker, ls in implementations:
+        throughputs = [all_results[impl_name][bs] for bs in batch_sizes]
+        plt.plot(x_positions, throughputs, marker=marker, color=color,
+                 linestyle=ls, linewidth=2, markersize=8, label=impl_name, alpha=0.85)
 
     plt.xlabel("Batch Size", fontsize=12)
     plt.ylabel("Throughput (new leaves/sec)", fontsize=12)
     plt.title(
-        f"ndrsmt: Batch Size vs Throughput\n(Pre-filled with {pre_insert_count} leaves)",
+        f"Batch Size vs Throughput\n(Pre-filled with {pre_insert_count} leaves)",
         fontsize=14,
     )
-
-    # Set x-ticks to batch sizes with equal spacing
     plt.xticks(x_positions, batch_sizes)
-
-    # Start y-axis (throughput) at zero
     plt.ylim(bottom=0)
-
+    plt.legend()
     plt.grid(True, alpha=0.3)
-
-    # Add annotations
-    for i, (bs, tp) in enumerate(results.items()):
-        plt.annotate(
-            f"{tp:.0f}",
-            (i, tp),
-            textcoords="offset points",
-            xytext=(0, 10),
-            ha="center",
-            va="bottom",
-            fontsize=9,
-        )
-
     plt.tight_layout()
     plt.savefig("graph3_batch_vs_throughput.png", dpi=150)
     plt.close()

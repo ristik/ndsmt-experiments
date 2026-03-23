@@ -6,7 +6,7 @@ import sys
 import hashlib
 import psutil
 
-from ndrsmt import (
+from ndrsmt2 import (
     SparseMerkleTree, verify_consistency
 )
 
@@ -47,7 +47,8 @@ def run_benchmark(depth=256, batch_size=10000, num_rounds=60):
         batch = []
         for i in range(batch_size):
             rk = hash(f"r{rnd}_i{i}") % (2 ** depth)
-            rv = to_int(f"V{rk}")
+            # rv = to_int(f"V{rk}
+            rv = b"value"
             batch.append((rk, rv))
 
         old_root = smt.get_root()
