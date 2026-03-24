@@ -1,14 +1,17 @@
 # Radix Sparse Merkle Tree v2 (RSMT2) with Consistency Proofs
 #
 # Leaf-anchored topology: each leaf hashes the full 256-bit key, making
-# leaves the spatial anchors. Internal nodes hash only their children:
-#   H_node(lh, rh) = SHA256(0x01 || lh || rh)
-#   H_leaf(key, value) = SHA256(0x00 || key_32B || value)
+# leaves the spatial anchors. Internal nodes hash their children and their
+# own split-bit depth:
+#   H_node(lh, rh, depth) = SHA256(0x01 || depth_2B || lh || rh)
+#   H_leaf(key, value)    = SHA256(0x00 || key_32B  || value)
 #
-# Because neither leaf nor node hashes depend on the tree's edge structure
-# (path / common prefix), inserting a new key only creates new hashes for
-# the new leaf and new internal nodes. Pre-existing node hashes are strictly
-# read-only -- splitting an edge above them does not change their hash.
+# "depth" is the absolute bit position at which the node branches (its
+# split bit in inclusion proof). It does not encode the path / common prefix.
+# Inserting a new key only creates new hashes for the new leaf and new internal nodes.
+# Pre-existing node hashes are strictly read-only -- splitting an edge
+# above them does not change their split-bit depth, so their hash is
+# unaffected.
 #
 # Internal nodes always have exactly two children (radix tree invariant:
 # nodes are only created at bifurcation points). This avoids the single-
@@ -21,7 +24,7 @@
 #
 # Proof format (flat opcode stream from pre-order traversal):
 #   'S'   Unchanged subtree.   Stream: ['S', hash].
-#   'N'   Branch node.         Stream: ['N']. Two children follow (left, right).
+#   'N'   Branch node.         Stream: ['N', depth]. Two children follow (left, right).
 #   'L'   New leaf inserted.   Stream: ['L', key].
 #
 # No BL (border leaf) or BNS (border node shortened) opcodes are needed.
@@ -34,8 +37,8 @@
 #   'N': eval left --> (lh_0, lh_1), eval right --> (rh_0, rh_1)
 #        h_0: both null --> null
 #             exactly one null --> pass-through (the non-null hash)
-#             both non-null --> H_node(lh_0, rh_0)
-#        h_1: H_node(lh_1, rh_1)
+#             both non-null --> H_node(lh_0, rh_0, depth)
+#        h_1: H_node(lh_1, rh_1, depth)
 #   'L': pop key, look up value from B
 #        --> (null, H_leaf(key, value))
 #
@@ -48,6 +51,8 @@
 # - L keys are matched against the verifier's own batch; values cannot be faked.
 # - The N structure must simultaneously reconstruct both ρ_0 and ρ_1 from
 #   collision-resistant hashes, binding the topology cryptographically.
+# - Internal node hashes commit to the split-bit depth, preventing an attacker
+#   from presenting a valid subtree hash at a different level in an inclusion proof.
 # - Pre-existing leaves hash the full key (absolute anchor); their hashes
 #   never change regardless of tree restructuring, preventing silent deletion.
 
@@ -64,7 +69,8 @@
 #   assert current == root
 
 # Possible optimization we're postponing for now:
-# Do not provide explicit inclusion batch B to verifier, instead do
+# Do not provide explicit inclusion batch B to consistency proof verifier, instead
+# embed the values to proof by modifying the rule:
 #   'L'   New leaf inserted.   Stream: ['L', key, value].
 
 import hashlib
@@ -78,12 +84,12 @@ KEY_BYTES = 32  # 256-bit keys
 EMPTY = None
 
 def hash_leaf(key, value):
-    """SHA256(0x00 || key_32B || value) -- position-independent leaf hash."""
+    """SHA256(0x00 || key_32B || value) --  leaf hash."""
     return hashlib.sha256(b'\x00' + key.to_bytes(KEY_BYTES, 'big') + value).digest()
 
-def hash_node(lh, rh):
-    """SHA256(0x01 || lh || rh) -- children-only internal hash."""
-    return hashlib.sha256(b'\x01' + lh + rh).digest()
+def hash_node(lh, rh, depth):
+    """SHA256(0x01 || node_depth_2B || lh || rh) -- depth-tagged internal node hash."""
+    return hashlib.sha256(b'\x01' + depth.to_bytes(2, 'big') + lh + rh).digest()
 
 # ---------------------------------------------------------------------------
 # Path utilities (for tree navigation only, not hashing)
@@ -113,19 +119,20 @@ class LeafBranch:
 
 
 class NodeBranch:
-    """Internal node: path (navigation) + left/right children.
+    """Internal node: path (navigation) + left/right children + split depth.
     Always has exactly two children (radix tree invariant)."""
-    __slots__ = ['path', 'left', 'right', '_hash']
+    __slots__ = ['path', 'left', 'right', 'depth', '_hash']
 
-    def __init__(self, path, left, right):
+    def __init__(self, path, left, right, depth):
         self.path  = path
         self.left  = left
         self.right = right
+        self.depth = depth  # absolute bit position of the branch (split bit)
         self._hash = None
 
     def get_hash(self):
         if self._hash is None:
-            self._hash = hash_node(self.left.get_hash(), self.right.get_hash())
+            self._hash = hash_node(self.left.get_hash(), self.right.get_hash(), self.depth)
         return self._hash
 
 # ---------------------------------------------------------------------------
@@ -282,10 +289,10 @@ class SparseMerkleTree:
         lb = [(k, v) for k, v in batch if not ((k >> split) & 1)]
         rb = [(k, v) for k, v in batch if      (k >> split) & 1 ]
 
-        proof_out.append('N')
+        proof_out.extend(['N', split])
         ln = self._build_batch_proof(lb, split, proof_out, frozen)
         rn = self._build_batch_proof(rb, split, proof_out, frozen)
-        return NodeBranch(cp, ln, rn)
+        return NodeBranch(cp, ln, rn, split)
 
     # ------------------------------------------------------------------
     # Internal: insert batch into existing subtree with consistency proof
@@ -334,7 +341,7 @@ class SparseMerkleTree:
         batch_left  = [(k, v) for k, v in batch if not ((k >> split) & 1)]
         batch_right = [(k, v) for k, v in batch if      (k >> split) & 1 ]
 
-        proof_out.append('N')
+        proof_out.extend(['N', split])
         new_left  = self._insert_proof(node.left,  batch_left,  split, proof_out)
         new_right = self._insert_proof(node.right, batch_right, split, proof_out)
 
@@ -363,7 +370,7 @@ class SparseMerkleTree:
         batch_left  = [(k, v) for k, v in batch if not ((k >> new_split) & 1)]
         batch_right = [(k, v) for k, v in batch if      (k >> new_split) & 1 ]
 
-        proof_out.append('N')
+        proof_out.extend(['N', new_split])
         if old_dir == 0:
             new_left  = self._insert_proof(node,  batch_left,  new_split, proof_out)
             new_right = self._insert_proof(None,  batch_right, new_split, proof_out)
@@ -371,7 +378,7 @@ class SparseMerkleTree:
             new_left  = self._insert_proof(None,  batch_left,  new_split, proof_out)
             new_right = self._insert_proof(node,  batch_right, new_split, proof_out)
 
-        return NodeBranch(new_cp, new_left, new_right)
+        return NodeBranch(new_cp, new_left, new_right, new_split)
 
 
 # ---------------------------------------------------------------------------
@@ -390,6 +397,7 @@ def synchronized_proof_eval(proof_iterator, batch_dict):
         return h, h
 
     if tag == 'N':
+        depth = next(proof_iterator)
         lh0, lh1 = synchronized_proof_eval(proof_iterator, batch_dict)
         rh0, rh1 = synchronized_proof_eval(proof_iterator, batch_dict)
 
@@ -401,10 +409,10 @@ def synchronized_proof_eval(proof_iterator, batch_dict):
         elif rh0 is None:
             h0 = lh0
         else:
-            h0 = hash_node(lh0, rh0)
+            h0 = hash_node(lh0, rh0, depth)
 
         # h_1: always combine both children
-        h1 = hash_node(lh1, rh1)
+        h1 = hash_node(lh1, rh1, depth)
         return h0, h1
 
     if tag == 'L':
@@ -479,9 +487,9 @@ def verify_proof(key, value, bitmap, siblings, root, depth):
     for idx, i in enumerate(bits):
         sibling = siblings[idx]
         if (key >> i) & 1:
-            current = hash_node(sibling, current)
+            current = hash_node(sibling, current, i)
         else:
-            current = hash_node(current, sibling)
+            current = hash_node(current, sibling, i)
 
     return current == root
 
