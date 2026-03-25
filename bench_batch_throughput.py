@@ -13,8 +13,8 @@ import matplotlib.pyplot as plt
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from ndrsmt import SparseMerkleTree as SMT_ndrsmt, verify_consistency as vc_ndrsmt
-from ndrsmt2 import SparseMerkleTree as SMT_ndrsmt2, verify_consistency as vc_ndrsmt2
+from ndrsmt2 import SparseMerkleTree as SMT_ndrsmt, verify_consistency as vc_ndrsmt
+from ndrsmt3o import SparseMerkleTree as SMT_ndrsmt2, verify_consistency as vc_ndrsmt2
 
 
 def to_int(aa):
@@ -33,7 +33,7 @@ def run_measurement(SMT, verify_consistency, batch_size, pre_insert_count, depth
     pre_batch = []
     for i in range(pre_insert_count):
         rk = hash(f"pre_i{i}") % (2**depth)
-        rv = to_int(f"Vpre{rk}")
+        rv = f"Vpre{rk}".encode(encoding="utf-8")
         pre_batch.append((rk, rv))
 
     smt.batch_insert(pre_batch)
@@ -42,7 +42,7 @@ def run_measurement(SMT, verify_consistency, batch_size, pre_insert_count, depth
     batch = []
     for i in range(batch_size):
         rk = hash(f"meas_i{i}") % (2**depth)
-        rv = to_int(f"Vmeas{rk}")
+        rv = f"Vmeas{rk}".encode(encoding="utf-8")
         batch.append((rk, rv))
 
     pre_root = smt.get_root()
@@ -70,8 +70,8 @@ def main():
     num_trials = 3
 
     implementations = [
-        ("ndrsmt",  SMT_ndrsmt,  vc_ndrsmt,  "red",    "^", "-"),
-        ("ndrsmt2", SMT_ndrsmt2, vc_ndrsmt2, "purple", "D", "--"),
+        ("ndrsmt2",  SMT_ndrsmt,  vc_ndrsmt,  "red",    "^", "-"),
+        ("ndrsmt3o", SMT_ndrsmt2, vc_ndrsmt2, "purple", "D", "--"),
     ]
 
     print(
