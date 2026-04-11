@@ -5,7 +5,7 @@
 # Leaf-anchored topology: each leaf hashes the full 256-bit key, making
 # leaves the spatial anchors. Internal nodes hash exactly two children and
 # commit to their explicit bifurcation depth:
-#   H_node(lh, rh, depth) = SHA256(0x01 || depth_2B || lh || rh)
+#   H_node(lh, rh, depth) = SHA256(0x01 || depth_1B || lh || rh)
 #   H_leaf(key, value)    = SHA256(0x00 || key_32B  || value)
 #
 # Because neither leaf nor node hashes depend on the tree's edge structure
@@ -17,8 +17,14 @@
 # ---------------------------------------------------------------------------
 # Consistency Proof
 # -----------------
-# Demonstrates that batch B was correctly inserted into tree state ρ_0,
-# producing state ρ_1, without modifying or deleting pre-existing records.
+# Demonstrates that batch B was inserted into tree pre-state ρ_0,
+# producing post-state ρ_1, without modifying or deleting pre-existing records.
+#
+# It verifies preservation of committed subtree hashes and batch incorporation
+# into the post-state hash, but it does not fully verify that the resulting
+# post-state is a well-formed radix tree whose topology is uniquely determined
+# by the committed keys.
+# This may result in leaves without valid inclusion proofs.
 #
 # Format (flat opcode stream from LSB-first post-order traversal):
 #   'S' (Subtree): Stream: ['S', hash]. Represents an unmodified existing branch.
@@ -138,7 +144,6 @@
 
 
 import hashlib
-import sys
 
 # ---------------------------------------------------------------------------
 # Constants & Hashers and lookup tables
@@ -147,7 +152,7 @@ import sys
 KEY_BYTES = 32
 
 # Pre-compute depth byte strings to avoid calling .to_bytes() millions of times
-DEPTH_BYTES = [d.to_bytes(2, "big") for d in range(257)]
+DEPTH_BYTES = [d.to_bytes(1, "big") for d in range(256)]
 
 # Pre-compute table to reverse bits in a byte at C-speed
 BIT_REVERSE_TABLE = bytes(int(f"{i:08b}"[::-1], 2) for i in range(256))
@@ -374,6 +379,37 @@ class SparseMerkleTree:
         return None
 
 
+    def inclusion_cert(self, key):
+        """Walk root to leaf, collecting bitmap and siblings."""
+        node = self.root
+        if node is None:
+            return None
+
+        bitmap = 0
+        siblings = []
+        bit = 0
+
+        while isinstance(node, NodeBranch):
+            n = path_len(node.path)
+            prefix = node.path & ((1 << n) - 1)
+            if ((key >> bit) & ((1 << n) - 1)) != prefix:
+                return None  # key not in tree
+            bit += n
+            depth = node.depth
+            if (key >> bit) & 1:
+                siblings.append(node.left.get_hash())
+                node = node.right
+            else:
+                siblings.append(node.right.get_hash())
+                node = node.left
+            bitmap |= (1 << depth)
+
+        if not isinstance(node, LeafBranch) or node.key != key:
+            return None
+
+        return {"bitmap": bitmap, "siblings": siblings}
+
+
 # ---------------------------------------------------------------------------
 # Verifier Functions
 # ---------------------------------------------------------------------------
@@ -399,6 +435,11 @@ def verify_consistency(proof, old_root, new_root, batch, _=None):
 
             if tag == "S":
                 h = proof[pi]
+                if h == None:
+                    print("SNone", h)
+                if h == b"\x00" * 32:
+                    print("Szeros", h)
+                # print("S", h.hex())
                 pi += 1
                 stack.append((h, h))
 
@@ -434,3 +475,26 @@ def verify_consistency(proof, old_root, new_root, batch, _=None):
 
     r0, r1 = stack[0]
     return r0 == old_root and r1 == new_root
+
+
+def verify_inclusion(cert, root_hash, key, value):
+    """Verify an inclusion certificate against a root hash."""
+    bitmap = cert["bitmap"]
+    siblings = list(cert["siblings"])
+
+    h = hash_leaf(key, value)
+    j = len(siblings)
+
+    for d in range(255, -1, -1):
+        if not (bitmap >> d) & 1:
+            continue
+        j -= 1
+        if j < 0:
+            return False
+        s = siblings[j]
+        if (key >> d) & 1:
+            h = hash_node(s, h, d)
+        else:
+            h = hash_node(h, s, d)
+
+    return j == 0 and h == root_hash
