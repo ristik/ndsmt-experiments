@@ -26,10 +26,11 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 # Just add your module names here. The script will automatically import
 # `SparseMerkleTree` and `verify_consistency` from each module.
 MODULES_TO_BENCH = [
-    "ndrsmt",
-    "ndrsmt2",
-    "ndrsmt3",
+    "ndsmt_lvl",
+    "ndsmt_op",
     "ndrsmt3o",
+    "rsmt4",
+    "rsmt5"
 ]
 
 BATCH_SIZES = [10000]
@@ -198,7 +199,7 @@ def main():
         plt.plot(x, y, marker=markers[name], color=colors[name], label=name)
     plt.xlabel("Total Leaves")
     plt.ylabel("Time (seconds)")
-    plt.title("Batch Insertion Speed")
+    plt.title("Batch Insertion Time")
     plt.legend()
     plt.grid(True, alpha=0.3)
 
@@ -209,7 +210,7 @@ def main():
         plt.plot(x, y, marker=markers[name], color=colors[name], label=name)
     plt.xlabel("Total Leaves")
     plt.ylabel("Time (seconds)")
-    plt.title("Proof Verification Speed")
+    plt.title("Proof Verification Time")
     plt.legend()
     plt.grid(True, alpha=0.3)
 

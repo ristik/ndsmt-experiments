@@ -1,5 +1,6 @@
 # Path-compressed Sparse Merkle Tree (SMT) with non-deletion (consistency) proofs.
-# Specification: Unicity Yellowpaper, Appendix - Sparse Merkle Trees.
+# Tree format matches the paper "Unicity Infrastructure - the Aggregation Layer
+# technical report" , https://github.com/unicitynetwork/aggr-layer-paper/
 #
 # Hash encoding uses CBOR arrays for unambiguous domain separation:
 #   Leaf:   H = SHA-256(CBOR([path, data]))
@@ -8,45 +9,53 @@
 # identifying the node's position in the tree.
 
 import hashlib
-import sys
 import json
+import sys
 
 # ---------------------------------------------------------------------------
 # Minimal CBOR encoder (handles None, unsigned int, bytes, list)
 # ---------------------------------------------------------------------------
 
+
 def cbor_encode(value):
     """Encode a value as CBOR bytes. Supports None, int >= 0, bytes, list."""
     if value is None:
-        return b'\xf6'                                      # CBOR null
+        return b"\xf6"  # CBOR null
     if isinstance(value, int):
         if value < 0:
             raise ValueError("negative integers not supported")
         if value < 2**64:
-            return _cbor_head(0, value)                     # major 0: uint
+            return _cbor_head(0, value)  # major 0: uint
         # Tag 2: positive bignum as byte string
         n = (value.bit_length() + 7) // 8
-        return b'\xc2' + cbor_encode(value.to_bytes(n, 'big'))
+        return b"\xc2" + cbor_encode(value.to_bytes(n, "big"))
     if isinstance(value, (bytes, bytearray)):
-        return _cbor_head(2, len(value)) + value            # major 2: bstr
+        return _cbor_head(2, len(value)) + value  # major 2: bstr
     if isinstance(value, (list, tuple)):
-        body = b''.join(cbor_encode(v) for v in value)
-        return _cbor_head(4, len(value)) + body             # major 4: array
+        body = b"".join(cbor_encode(v) for v in value)
+        return _cbor_head(4, len(value)) + body  # major 4: array
     raise TypeError(f"cbor_encode: unsupported {type(value)}")
+
 
 def _cbor_head(major, n):
     m = major << 5
-    if n < 24:       return bytes([m | n])
-    if n < 0x100:    return bytes([m | 24, n])
-    if n < 0x10000:  return bytes([m | 25]) + n.to_bytes(2, 'big')
-    if n < 2**32:    return bytes([m | 26]) + n.to_bytes(4, 'big')
-    return bytes([m | 27]) + n.to_bytes(8, 'big')
+    if n < 24:
+        return bytes([m | n])
+    if n < 0x100:
+        return bytes([m | 24, n])
+    if n < 0x10000:
+        return bytes([m | 25]) + n.to_bytes(2, "big")
+    if n < 2**32:
+        return bytes([m | 26]) + n.to_bytes(4, "big")
+    return bytes([m | 27]) + n.to_bytes(8, "big")
+
 
 # ---------------------------------------------------------------------------
 # SMT node hashing
 # ---------------------------------------------------------------------------
 
 EMPTY = None  # ⊥ — empty node / absent value
+
 
 def path_at_level(key, level, depth):
     """
@@ -83,9 +92,11 @@ def hash_branch(path_segment, h_left, h_right):
         return h_left
     return hashlib.sha256(cbor_encode([path_segment, h_left, h_right])).digest()
 
+
 class Node:
     """Memory-efficient internal node for the compressed SMT."""
-    __slots__ = ['level', 'key', 'hash', 'left', 'right']
+
+    __slots__ = ["level", "key", "hash", "left", "right"]
 
     def __init__(self, level, key, hash_val, left=None, right=None):
         self.level = level
@@ -93,6 +104,7 @@ class Node:
         self.hash = hash_val
         self.left = left
         self.right = right
+
 
 class SparseMerkleTree:
     def __init__(self, depth=256):
@@ -140,8 +152,7 @@ class SparseMerkleTree:
 
         # Precompute leaf hashes
         batch_leaves = [
-            (k, hash_leaf(path_at_level(k, 0, self.depth), d))
-            for k, d in new_items
+            (k, hash_leaf(path_at_level(k, 0, self.depth), d)) for k, d in new_items
         ]
 
         # 2. Insert recursively
@@ -220,16 +231,19 @@ class SparseMerkleTree:
         if new_left is None:
             return new_right  # Skip creating a branch!
         if new_right is None:
-            return new_left   # Skip creating a branch!
+            return new_left  # Skip creating a branch!
 
         # Both children exist, so we MUST create a cryptographic branch here
-        h = hash_branch(path_at_level(prefix, level, self.depth), new_left.hash, new_right.hash)
+        h = hash_branch(
+            path_at_level(prefix, level, self.depth), new_left.hash, new_right.hash
+        )
         return Node(level, prefix, h, new_left, new_right)
 
 
 # ---------------------------------------------------------------------------
-# Standalone proof verification (no tree state needed)
+# Standalone proof verification
 # ---------------------------------------------------------------------------
+
 
 def smt_compute_tree_root(proof, batch, depth):
     """
@@ -260,9 +274,7 @@ def smt_compute_tree_root(proof, batch, depth):
             parent = k >> 1
 
             # Find sibling hash: batch > proof > empty
-            if (k & 1 == 0
-                    and i + 1 < len(nodes)
-                    and nodes[i + 1][0] == sibling):
+            if k & 1 == 0 and i + 1 < len(nodes) and nodes[i + 1][0] == sibling:
                 i += 1
                 sib_val = nodes[i][1]
             elif j < len(lp) and lp[j][0] == sibling:
@@ -303,15 +315,19 @@ def verify_consistency(proof, old_root, new_root, batch, depth):
     batch_empty = [(key, EMPTY) for key, _ in batch]
     r1 = smt_compute_tree_root(proof, batch_empty, depth)
     if r1 != old_root:
-        print(f"Consistency step 1 failed:\n"
-              f"  computed: {r1!r}\n  expected: {old_root!r}", file=sys.stderr)
+        print(
+            f"Consistency step 1 failed:\n  computed: {r1!r}\n  expected: {old_root!r}",
+            file=sys.stderr,
+        )
         return False
 
     # Step 2: new state matches claimed root
     r2 = smt_compute_tree_root(proof, batch, depth)
     if r2 != new_root:
-        print(f"Consistency step 2 failed:\n"
-              f"  computed: {r2!r}\n  expected: {new_root!r}", file=sys.stderr)
+        print(
+            f"Consistency step 2 failed:\n  computed: {r2!r}\n  expected: {new_root!r}",
+            file=sys.stderr,
+        )
         return False
 
     return True
@@ -321,13 +337,14 @@ def verify_consistency(proof, old_root, new_root, batch, depth):
 # Demo / test / quick witness gen
 # ---------------------------------------------------------------------------
 
+
 def main():
     depth = 256
     smt = SparseMerkleTree(depth)
 
     # --- test: small batch with adjacent keys ---
     keys = [1, 3, 2]
-    values = [b'value1', b'value3', b'value2']
+    values = [b"value1", b"value3", b"value2"]
     batch = zip(keys, values)
 
     old_root = smt.get_root()
@@ -338,7 +355,7 @@ def main():
     # --- pre-fill tree ---
     batch = {}
     for i in range(5000):
-        rk = hash("a" + str(i)) % (2 ** depth)
+        rk = hash("a" + str(i)) % (2**depth)
         batch[rk] = f"Val {rk}".encode()
     batch[3] = b"double three"  # and a duplicate
 
@@ -351,7 +368,7 @@ def main():
     # --- proving batch ---
     batch = {}
     for i in range(5000):
-        rk = hash("b" + str(i)) % (2 ** depth)
+        rk = hash("b" + str(i)) % (2**depth)
         batch[rk] = f"Val {rk}".encode()
 
     old_root = new_root

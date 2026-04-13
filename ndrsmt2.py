@@ -83,70 +83,84 @@ import sys
 KEY_BYTES = 32  # 256-bit keys
 EMPTY = None
 
+
 def hash_leaf(key, value):
     """SHA256(0x00 || key_32B || value) --  leaf hash."""
-    return hashlib.sha256(b'\x00' + key.to_bytes(KEY_BYTES, 'big') + value).digest()
+    return hashlib.sha256(b"\x00" + key.to_bytes(KEY_BYTES, "big") + value).digest()
+
 
 def hash_node(lh, rh, depth):
     """SHA256(0x01 || node_depth_2B || lh || rh) -- depth-tagged internal node hash."""
-    return hashlib.sha256(b'\x01' + depth.to_bytes(2, 'big') + lh + rh).digest()
+    return hashlib.sha256(b"\x01" + depth.to_bytes(2, "big") + lh + rh).digest()
+
 
 # ---------------------------------------------------------------------------
 # Path utilities (for tree navigation only, not hashing)
 # ---------------------------------------------------------------------------
 
+
 def path_len(p):
     """Number of payload bits (excluding sentinel)."""
     return p.bit_length() - 1
+
 
 # ---------------------------------------------------------------------------
 # Node types
 # ---------------------------------------------------------------------------
 
+
 class LeafBranch:
     """Leaf node: stores key, value, path (navigation), and cached hash."""
-    __slots__ = ['path', 'key', 'value', '_hash']
+
+    __slots__ = ["path", "key", "value", "_hash"]
 
     def __init__(self, path, key, value):
-        self.path  = path
-        self.key   = key
+        self.path = path
+        self.key = key
         self.value = value
         self._hash = hash_leaf(key, value)  # full key, position-independent
 
     def get_hash(self):
         return self._hash
+
     # No rehash needed -- hash does not depend on path.
 
 
 class NodeBranch:
     """Internal node: path (navigation) + left/right children + split depth.
     Always has exactly two children (radix tree invariant)."""
-    __slots__ = ['path', 'left', 'right', 'depth', '_hash']
+
+    __slots__ = ["path", "left", "right", "depth", "_hash"]
 
     def __init__(self, path, left, right, depth):
-        self.path  = path
-        self.left  = left
+        self.path = path
+        self.left = left
         self.right = right
         self.depth = depth  # absolute bit position of the branch (split bit)
         self._hash = None
 
     def get_hash(self):
         if self._hash is None:
-            self._hash = hash_node(self.left.get_hash(), self.right.get_hash(), self.depth)
+            self._hash = hash_node(
+                self.left.get_hash(), self.right.get_hash(), self.depth
+            )
         return self._hash
+
 
 # ---------------------------------------------------------------------------
 # Radix Sparse Merkle Tree
 # ---------------------------------------------------------------------------
+
 
 class SparseMerkleTree:
     """
     Radix SMT v2. LSB-first path consumption.
     Append-only (no deletion, no value changes). In-memory.
     """
+
     def __init__(self, depth=256):
         self.depth = depth
-        self.root  = None
+        self.root = None
 
     def get_root(self):
         return self.root.get_hash() if self.root else None
@@ -171,7 +185,7 @@ class SparseMerkleTree:
             new_items[key] = data
 
         if not new_items:
-            return [], ['S', None]
+            return [], []
 
         items = sorted(new_items.items())
         proof_out = []
@@ -196,20 +210,20 @@ class SparseMerkleTree:
                 return None
             return (0, [])
 
-        n    = path_len(node.path)
+        n = path_len(node.path)
         kpfx = (key >> start_bit) & ((1 << n) - 1)
         npfx = node.path & ((1 << n) - 1)
         if kpfx != npfx:
             return None
 
-        bit       = start_bit + n
+        bit = start_bit + n
         direction = (key >> bit) & 1
 
         if direction:
-            result       = self._collect_proof(node.right, key, bit)
+            result = self._collect_proof(node.right, key, bit)
             sibling_hash = node.left.get_hash()
         else:
-            result       = self._collect_proof(node.left, key, bit)
+            result = self._collect_proof(node.left, key, bit)
             sibling_hash = node.right.get_hash()
 
         if result is None:
@@ -217,7 +231,7 @@ class SparseMerkleTree:
 
         bitmap, siblings = result
         siblings.append(sibling_hash)
-        bitmap |= (1 << bit)
+        bitmap |= 1 << bit
         return (bitmap, siblings)
 
     # ------------------------------------------------------------------
@@ -226,13 +240,13 @@ class SparseMerkleTree:
 
     def _find_leaf(self, key):
         node = self.root
-        bit  = 0
+        bit = 0
         while node is not None:
             if isinstance(node, LeafBranch):
                 return node if node.key == key else None
-            n    = path_len(node.path)
+            n = path_len(node.path)
             kpfx = (key >> bit) & ((1 << n) - 1)
-            npfx = node.path    & ((1 << n) - 1)
+            npfx = node.path & ((1 << n) - 1)
             if kpfx != npfx:
                 return None
             bit += n
@@ -266,7 +280,7 @@ class SparseMerkleTree:
 
     def _build_batch_proof(self, batch, start_bit, proof_out, frozen=None):
         if not batch:
-            proof_out.extend(['S', None])
+            proof_out.extend(["S", None])
             return None
 
         if len(batch) == 1:
@@ -274,22 +288,22 @@ class SparseMerkleTree:
             path = self._rem(k, start_bit)
             leaf = LeafBranch(path, k, v)
             if frozen and k in frozen:
-                proof_out.extend(['S', frozen[k]])
+                proof_out.extend(["S", frozen[k]])
             else:
-                proof_out.extend(['L', k])
+                proof_out.extend(["L", k])
             return leaf
 
-        keys  = [k for k, _ in batch]
+        keys = [k for k, _ in batch]
         split = self._first_split(keys, start_bit)
 
         n_common = split - start_bit
-        cbits    = (keys[0] >> start_bit) & ((1 << n_common) - 1)
-        cp       = (1 << n_common) | cbits
+        cbits = (keys[0] >> start_bit) & ((1 << n_common) - 1)
+        cp = (1 << n_common) | cbits
 
         lb = [(k, v) for k, v in batch if not ((k >> split) & 1)]
-        rb = [(k, v) for k, v in batch if      (k >> split) & 1 ]
+        rb = [(k, v) for k, v in batch if (k >> split) & 1]
 
-        proof_out.extend(['N', split])
+        proof_out.extend(["N", split])
         ln = self._build_batch_proof(lb, split, proof_out, frozen)
         rn = self._build_batch_proof(rb, split, proof_out, frozen)
         return NodeBranch(cp, ln, rn, split)
@@ -300,7 +314,7 @@ class SparseMerkleTree:
 
     def _insert_proof(self, node, batch, start_bit, proof_out):
         if not batch:
-            proof_out.extend(['S', node.get_hash() if node else None])
+            proof_out.extend(["S", node.get_hash() if node else None])
             return node
 
         if node is None:
@@ -311,23 +325,24 @@ class SparseMerkleTree:
             if len(filtered) < len(batch):
                 print(f"Key {node.key} already exists, skipping.", file=sys.stderr)
             if not filtered:
-                proof_out.extend(['S', node.get_hash()])
+                proof_out.extend(["S", node.get_hash()])
                 return node
 
             # Merge existing leaf with new items; existing leaf is frozen (hash unchanged)
-            all_items = sorted([(node.key, node.value)] + filtered,
-                               key=lambda x: x[0])
+            all_items = sorted([(node.key, node.value)] + filtered, key=lambda x: x[0])
             frozen = {node.key: node.get_hash()}
-            return self._build_batch_proof(all_items, start_bit, proof_out, frozen=frozen)
+            return self._build_batch_proof(
+                all_items, start_bit, proof_out, frozen=frozen
+            )
 
         # NodeBranch: check how batch aligns with this node's path
-        n_path      = path_len(node.path)
+        n_path = path_len(node.path)
         node_prefix = node.path & ((1 << n_path) - 1)
 
         first_div = n_path
         for k, _ in batch:
             item_pfx = (k >> start_bit) & ((1 << n_path) - 1)
-            xor      = item_pfx ^ node_prefix
+            xor = item_pfx ^ node_prefix
             if xor:
                 low = (xor & -xor).bit_length() - 1
                 if low < first_div:
@@ -337,29 +352,29 @@ class SparseMerkleTree:
             return self._node_split_proof(node, batch, start_bit, first_div, proof_out)
 
         # Path fully matches -- recurse into children
-        split       = start_bit + n_path
-        batch_left  = [(k, v) for k, v in batch if not ((k >> split) & 1)]
-        batch_right = [(k, v) for k, v in batch if      (k >> split) & 1 ]
+        split = start_bit + n_path
+        batch_left = [(k, v) for k, v in batch if not ((k >> split) & 1)]
+        batch_right = [(k, v) for k, v in batch if (k >> split) & 1]
 
-        proof_out.extend(['N', split])
-        new_left  = self._insert_proof(node.left,  batch_left,  split, proof_out)
+        proof_out.extend(["N", split])
+        new_left = self._insert_proof(node.left, batch_left, split, proof_out)
         new_right = self._insert_proof(node.right, batch_right, split, proof_out)
 
-        node.left  = new_left
+        node.left = new_left
         node.right = new_right
         node._hash = None
         return node
 
     def _node_split_proof(self, node, batch, start_bit, first_div, proof_out):
-        n_path      = path_len(node.path)
+        n_path = path_len(node.path)
         node_prefix = node.path & ((1 << n_path) - 1)
 
-        n_common    = first_div
+        n_common = first_div
         common_bits = node_prefix & ((1 << n_common) - 1)
-        new_cp      = (1 << n_common) | common_bits
-        new_split   = start_bit + n_common
+        new_cp = (1 << n_common) | common_bits
+        new_split = start_bit + n_common
 
-        old_dir     = (node_prefix >> n_common) & 1
+        old_dir = (node_prefix >> n_common) & 1
 
         # Shorten node's path. Hash is unchanged (doesn't include path).
         new_path = node.path >> n_common
@@ -367,16 +382,16 @@ class SparseMerkleTree:
             new_path = 1
         node.path = new_path
 
-        batch_left  = [(k, v) for k, v in batch if not ((k >> new_split) & 1)]
-        batch_right = [(k, v) for k, v in batch if      (k >> new_split) & 1 ]
+        batch_left = [(k, v) for k, v in batch if not ((k >> new_split) & 1)]
+        batch_right = [(k, v) for k, v in batch if (k >> new_split) & 1]
 
-        proof_out.extend(['N', new_split])
+        proof_out.extend(["N", new_split])
         if old_dir == 0:
-            new_left  = self._insert_proof(node,  batch_left,  new_split, proof_out)
-            new_right = self._insert_proof(None,  batch_right, new_split, proof_out)
+            new_left = self._insert_proof(node, batch_left, new_split, proof_out)
+            new_right = self._insert_proof(None, batch_right, new_split, proof_out)
         else:
-            new_left  = self._insert_proof(None,  batch_left,  new_split, proof_out)
-            new_right = self._insert_proof(node,  batch_right, new_split, proof_out)
+            new_left = self._insert_proof(None, batch_left, new_split, proof_out)
+            new_right = self._insert_proof(node, batch_right, new_split, proof_out)
 
         return NodeBranch(new_cp, new_left, new_right, new_split)
 
@@ -385,6 +400,7 @@ class SparseMerkleTree:
 # Proof evaluation
 # ---------------------------------------------------------------------------
 
+
 def synchronized_proof_eval(proof_iterator, batch_dict):
     """Computes (h_0, h_1) -- pre- and post-insertion hashes, in one pass."""
     try:
@@ -392,11 +408,11 @@ def synchronized_proof_eval(proof_iterator, batch_dict):
     except StopIteration:
         return None, None
 
-    if tag == 'S':
+    if tag == "S":
         h = next(proof_iterator)
         return h, h
 
-    if tag == 'N':
+    if tag == "N":
         depth = next(proof_iterator)
         lh0, lh1 = synchronized_proof_eval(proof_iterator, batch_dict)
         rh0, rh1 = synchronized_proof_eval(proof_iterator, batch_dict)
@@ -415,7 +431,7 @@ def synchronized_proof_eval(proof_iterator, batch_dict):
         h1 = hash_node(lh1, rh1, depth)
         return h0, h1
 
-    if tag == 'L':
+    if tag == "L":
         k = next(proof_iterator)
         v = batch_dict.pop(k, None)
         if v is None:
@@ -428,6 +444,7 @@ def synchronized_proof_eval(proof_iterator, batch_dict):
 # ---------------------------------------------------------------------------
 # Consistency (non-deletion) proof verification
 # ---------------------------------------------------------------------------
+
 
 def verify_consistency(proof, old_root, new_root, batch, _=None):
     if not batch:
@@ -454,11 +471,17 @@ def verify_consistency(proof, old_root, new_root, batch, _=None):
         return False
 
     if r0 != old_root:
-        print(f"r0 mismatch:\n  computed: {r0.hex() if r0 else None}\n  expected: {old_root.hex() if old_root else None}", file=sys.stderr)
+        print(
+            f"r0 mismatch:\n  computed: {r0.hex() if r0 else None}\n  expected: {old_root.hex() if old_root else None}",
+            file=sys.stderr,
+        )
         return False
 
     if r1 != new_root:
-        print(f"r1 mismatch:\n  computed: {r1.hex() if r1 else None}\n  expected: {new_root.hex() if new_root else None}", file=sys.stderr)
+        print(
+            f"r1 mismatch:\n  computed: {r1.hex() if r1 else None}\n  expected: {new_root.hex() if new_root else None}",
+            file=sys.stderr,
+        )
         return False
 
     return True
@@ -467,6 +490,7 @@ def verify_consistency(proof, old_root, new_root, batch, _=None):
 # ---------------------------------------------------------------------------
 # Inclusion proof verification
 # ---------------------------------------------------------------------------
+
 
 def verify_proof(key, value, bitmap, siblings, root, depth):
     """Verify inclusion proof: bitmap marks branch positions, siblings leaf-to-root."""
@@ -498,21 +522,23 @@ def verify_proof(key, value, bitmap, siblings, root, depth):
 # Demo / test
 # ---------------------------------------------------------------------------
 
+
 def main():
     import time
 
     depth = 256
-    smt   = SparseMerkleTree(depth)
+    smt = SparseMerkleTree(depth)
 
     def check_batch(label, smt, batch):
         old_root = smt.get_root()
-        t0       = time.perf_counter()
+        t0 = time.perf_counter()
         items, proof = smt.batch_insert(batch)
-        dt       = time.perf_counter() - t0
+        dt = time.perf_counter() - t0
         new_root = smt.get_root()
 
-        assert verify_consistency(proof, old_root, new_root, items), \
+        assert verify_consistency(proof, old_root, new_root, items), (
             f"Consistency proof failed for {label}"
+        )
 
         # Spot-check individual inclusion proofs
         sample = items[:5] + items[-5:]
@@ -520,33 +546,38 @@ def main():
             result = smt.generate_proof(k)
             assert result is not None, f"key {k} not found"
             bitmap, siblings = result
-            assert verify_proof(k, v, bitmap, siblings, new_root, depth), \
+            assert verify_proof(k, v, bitmap, siblings, new_root, depth), (
                 f"inclusion proof failed for key {k}"
+            )
 
-        print(f"{label}: {len(items)} inserted in {dt:.3f}s, "
-              f"root={new_root.hex()[:16] if new_root else 'None'}…, "
-              f"consistency+inclusion OK", file=sys.stderr)
+        print(
+            f"{label}: {len(items)} inserted in {dt:.3f}s, "
+            f"root={new_root.hex()[:16] if new_root else 'None'}…, "
+            f"consistency+inclusion OK",
+            file=sys.stderr,
+        )
         return items
 
     # --- small batch ---
-    check_batch("Small batch", smt, [(1, b'v1'), (3, b'v3'), (2, b'v2')])
+    check_batch("Small batch", smt, [(1, b"v1"), (3, b"v3"), (2, b"v2")])
 
     # --- duplicate rejection ---
-    smt.batch_insert([(1, b'dup1'), (99, b'new99')])
-    assert smt._find_leaf(1)  is not None
+    smt.batch_insert([(1, b"dup1"), (99, b"new99")])
+    assert smt._find_leaf(1) is not None
     assert smt._find_leaf(99) is not None
 
     # --- large pre-fill ---
     batch = {}
     for i in range(5000):
-        rk = hash("a" + str(i)) % (2 ** depth)
+        rk = hash("a" + str(i)) % (2**depth)
         batch[rk] = f"Val {rk}".encode()
     batch[3] = b"dup three"
     check_batch("Pre-fill", smt, batch.items())
 
     # --- second large batch ---
-    batch2 = {hash("b" + str(i)) % (2 ** depth): f"Val2 {i}".encode()
-              for i in range(5000)}
+    batch2 = {
+        hash("b" + str(i)) % (2**depth): f"Val2 {i}".encode() for i in range(5000)
+    }
     check_batch("Second batch", smt, batch2.items())
 
     print("All consistency and inclusion proofs verified.", file=sys.stderr)

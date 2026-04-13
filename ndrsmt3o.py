@@ -130,18 +130,6 @@
 #      depths, produce ρ — a second-preimage attack on the iterated
 #      hash chain.
 #
-# ---------------------------------------------------------------------------
-# Protocol Considerations
-# ---------------------------------------------------------------------------
-# - Already-existing keys: batch_insert silently filters keys already in
-#   the tree. The consistency proof covers only actually-inserted keys.
-#   If the operator claims a batch key pre-exists and omits it, the
-#   protocol must independently verify pre-existence via an inclusion
-#   proof against ρ_0. Without this check, the operator can drop items.
-# - Denial of service: A malicious proof with excessive 'N' nesting can
-#   cause deep recursion. Production verifiers should enforce a recursion
-#   depth limit (256 for a 256-bit key space).
-
 
 import hashlib
 
@@ -240,7 +228,7 @@ class SparseMerkleTree:
             new_items[key] = data
 
         if not new_items:
-            return [], ["S", None]
+            return [], []
 
         # Sort the batch into tree-traversal order
         items = list(new_items.items())
@@ -378,7 +366,6 @@ class SparseMerkleTree:
             node = node.right if ((key >> bit) & 1) else node.left
         return None
 
-
     def inclusion_cert(self, key):
         """Walk root to leaf, collecting bitmap and siblings."""
         node = self.root
@@ -402,7 +389,7 @@ class SparseMerkleTree:
             else:
                 siblings.append(node.right.get_hash())
                 node = node.left
-            bitmap |= (1 << depth)
+            bitmap |= 1 << depth
 
         if not isinstance(node, LeafBranch) or node.key != key:
             return None

@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 
-import time
+import hashlib
+import importlib
 import os
 import sys
-import hashlib
+import time
+
 import psutil
-import importlib
+
 
 def get_size(obj, seen=None):
     if seen is None:
