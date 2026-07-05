@@ -13,43 +13,49 @@ See `ndrsmt3o.py` header:
 
 ### Implementations
 
-- **`ndsmt.py`**  
+- **`ndsmt.py`**
   Baseline Sparse Merkle Tree (SMT) with implicit blank leaves and path compression. Originally used for
-  [zk experiments](https://github.com/unicitynetwork/aggr-layer-paper/). 
+  [zk experiments](https://github.com/unicitynetwork/aggr-layer-paper/).
   Consistency proof is levelized array of untouched sibling subtree roots.
 
-- **`ndsmt_lvl.py`**  
+- **`ndsmt_lvl.py`**
   Functionally equivalent to the previous, performance-optimized. Lost the simplicity and regular structure.
 
-- **`ndsmt_lmdb2.py`**  
-  Same tree and consistency proof, but backed by an on-disk KV store (LMDB) instead of pure in-memory radix tree.  
+- **`ndsmt_lmdb2.py`**
+  Same tree and consistency proof, but backed by an on-disk KV store (LMDB) instead of pure in-memory radix tree.
   Memory usage is reduced by `(total_leaves / max_batch)` minus LRU cache.
 
-- **`ndsmt_op.py`**  
+- **`ndsmt_op.py`**
   Tree is the same as previous, consistency proof is a flat post-order opcode stream.
 
-- **`ndrsmt.py`**  
-  Radix tree copying the 
-  [aggregator-go](https://github.com/unicitynetwork/aggregator-go), Provides consistency proof which is basically brute forced to be compatible by excess complexity (too many opcodes); still one opcode less than full compatibility but this does not affect the performance (see file header). 
+- **`ndrsmt.py`**
+  Radix tree copying the
+  [aggregator-go](https://github.com/unicitynetwork/aggregator-go), Provides consistency proof which is basically brute forced to be compatible by excess complexity (too many opcodes); still one opcode less than full compatibility but this does not affect the performance (see file header).
 
-- **`ndrsmt2.py`**  
-  Hashes the full leaf key together with the leaf value, freezing the tree topology.  
+- **`ndrsmt2.py`**
+  Hashes the full leaf key together with the leaf value, freezing the tree topology.
   This simplifies most computations and removes half of the opcodes in the consistency proof (see header).
 
-- **`ndrsmt3.py`**  
+- **`ndrsmt3.py`**
   Further simplifies the consistency proof. Less opcodes, single-pass verification, uses recursion.
 
-- **`ndrsmt3o.py`**  
+- **`ndrsmt3o.py`**
   Optimized version: no recursion or lookups or indexed data structs in consistency proof verification, with documentation and **security argument** in the header.
 
-- **`rsmt4.py`**  
+- **`rsmt4.py`**
   Proves also canonical inserts, while maintaining the same inclusion proof format and tree internal node hashing. Batch insertion scales linearly. Dead end.
 
-- **`rsmt5.py`**  
+- **`rsmt5.py`**
   Proves also canonical inserts; internal nodes include traversal range
 
-- **`rsmt5a.py`**  
+- **`rsmt5a.py`**
   Functionally same, simpler but just a bit bigger inclusion proof format.
+
+- **`rsmt6a.py`**
+  Commits every internal node to its absolute key-prefix region and checks
+  edge coherence wherever a round introduces a new node or edge. This proves
+  canonical, append-only updates while retaining the compact v3 inclusion
+  proof format; preserved subtrees are opened only at newly split edges.
 
 
 
@@ -57,7 +63,7 @@ See `ndrsmt3o.py` header:
 
 - `bench*.py` -- testing and evaluation harness
 
-Effect of proposed change: (ndrsmt3o) vs baseline (ndrsmt), with batch size of 10000 leaves: 
+Effect of proposed change: (ndrsmt3o) vs baseline (ndrsmt), with batch size of 10000 leaves:
 
 ![img](graph2_metrics.png)
 
@@ -112,11 +118,14 @@ The cost is shifted to node width and inclusion proofs:
   - internal-node hashing takes extra committed inputs (lo, hi)
   - each inclusion-proof sibling now carries (hash, lo, hi), not just hash.
 
-![Cost of canonical inserts](graph2_cost-of-canonical.png)
+RSMT6a instead commits each internal node to its absolute key-prefix region:
 
-Note: In the worst case, a Byzantine SMT operator may obtain certification
-for a non-canonical post-state root that still preserves all previously
-committed leaves and incorporates the declared batch, yet leaves some
-committed leaves without valid inclusion certificates. Thus the loss is
-in structural canonicity and proof availability, not in prior-state
-preservation or batch incorporation.
+    H_node(depth, region, left_hash, right_hash)
+
+At every newly introduced edge, the consistency verifier checks that the
+child is deeper than its parent and that its region extends the parent's
+region followed by the correct side bit. By induction from the empty root,
+these local checks make every junction region the longest common prefix of
+the keys below it, giving a unique canonical radix topology. Unlike RSMT5,
+inclusion proofs need no additional range data because the verifier derives
+each expected region from the queried key.
