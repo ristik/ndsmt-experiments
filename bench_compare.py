@@ -26,11 +26,10 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 # Just add your module names here. The script will automatically import
 # `SparseMerkleTree` and `verify_consistency` from each module.
 MODULES_TO_BENCH = [
-    "ndsmt_lvl",
-    "ndsmt_op",
+    "ndrsmt",
     "ndrsmt3o",
-    "rsmt4",
-    "rsmt5"
+    "rsmt6",
+    "rsmt6a",
 ]
 
 BATCH_SIZES = [10000]
