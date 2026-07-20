@@ -26,13 +26,13 @@
 # by the committed keys.
 # This may result in leaves without valid inclusion proofs.
 #
-# Format (flat opcode stream from LSB-first post-order traversal):
+# Format (flat opcode stream from big-endian bit-string post-order traversal):
 #   'S' (Subtree): Stream: ['S', hash]. Represents an unmodified existing branch.
 #   'L' (Leaf):    Stream: ['L']. Denotes a newly inserted key-value pair.
 #   'N' (Node):    Stream: ['N', depth]. Two children precede (left, right).
 #
 # Verification Algorithm -- Eval(π, B) --> (h_0, h_1):
-#   1. Sort batch B by LSB-first traversal order (bit-reversed sort keys).
+#   1. Sort batch B by tree traversal order (raw byte order).
 #   2. Initialize a result stack and iterators for π and sorted B.
 #   3. Scan tokens in π (stack machine, no recursion):
 #      - 'S': push (hash, hash).
@@ -106,7 +106,7 @@
 # Format:
 #   - bitmap: bit string (here 256-bit integer). Set bits indicate branch
 #             node depth positions.
-#   - siblings: Array of sibling hashes ordered leaf-to-root.
+#   - siblings: Array of sibling hashes ordered root-to-leaf.
 #
 # Security Argument:
 #   Theorem: The operator cannot produce an inclusion proof for a
@@ -129,29 +129,42 @@
 #      finding hashes that, combined with H_leaf through the claimed
 #      depths, produce ρ — a second-preimage attack on the iterated
 #      hash chain.
-#
 
 import hashlib
 
 # ---------------------------------------------------------------------------
-# Constants & Hashers and lookup tables
+# Constants & Hashers
 # ---------------------------------------------------------------------------
 
 KEY_BYTES = 32
+KEY_BITS = KEY_BYTES * 8
 
 # Pre-compute depth byte strings to avoid calling .to_bytes() millions of times
 DEPTH_BYTES = [d.to_bytes(1, "big") for d in range(256)]
 
-# Pre-compute table to reverse bits in a byte at C-speed
-BIT_REVERSE_TABLE = bytes(int(f"{i:08b}"[::-1], 2) for i in range(256))
-
 
 def get_sort_key(k):
     """
-    Converts integer key to LSB-first lexicographical sort key.
-    (Reverse byte order, then reverse bits in each byte).
+    Converts integer key to tree-traversal lexicographical sort key.
+    Keys are read as big-endian bit strings, so the raw byte string is already
+    in traversal order.
     """
-    return k.to_bytes(KEY_BYTES, "big")[::-1].translate(BIT_REVERSE_TABLE)
+    return k.to_bytes(KEY_BYTES, "big")
+
+
+def key_bit(k, depth):
+    return (k >> (KEY_BITS - 1 - depth)) & 1
+
+
+def key_bits(k, start, length):
+    if length == 0:
+        return 0
+    return (k >> (KEY_BITS - start - length)) & ((1 << length) - 1)
+
+
+def first_diff_depth(k1, k2, start):
+    diff = (k1 ^ k2) & ((1 << (KEY_BITS - start)) - 1)
+    return KEY_BITS - diff.bit_length()
 
 
 def hash_leaf(key, value):
@@ -220,6 +233,138 @@ class SparseMerkleTree:
     def get_root(self):
         return self.root.get_hash() if self.root else None
 
+    def batch_insert_np(self, batch):
+        """
+        Batch insertion without consistency-proof generation.
+
+        The batch is sorted exactly once in tree traversal order, then
+        merged against the touched search frontier of the tree. Existing keys
+        are filtered during that merge, so this avoids the extra per-key
+        membership probes done by the proof-producing path.
+        """
+        items = self._prepare_batch_np(batch)
+        if not items:
+            return
+
+        self.root = self._insert_np(self.root, items, 0, len(items), 0)
+
+    def _prepare_batch_np(self, batch):
+        items = [(key, value, get_sort_key(key)) for key, value in batch]
+        items.sort(key=lambda item: item[2])
+
+        unique = []
+        prev_key = None
+        have_prev = False
+        for item in items:
+            key = item[0]
+            if have_prev and key == prev_key:
+                continue
+            unique.append(item)
+            prev_key = key
+            have_prev = True
+        return unique
+
+    def _partition_point_np(self, batch, start, end, split):
+        low, high = start, end
+        while low < high:
+            mid = (low + high) // 2
+            if key_bit(batch[mid][0], split):
+                high = mid
+            else:
+                low = mid + 1
+        return low
+
+    def _merge_leaf_np(self, batch, start, end, node):
+        leaf_item = (node.key, node.value, get_sort_key(node.key))
+        merged = []
+        i = start
+
+        while i < end and batch[i][2] < leaf_item[2]:
+            merged.append(batch[i])
+            i += 1
+
+        if i < end and batch[i][0] == node.key:
+            i += 1
+
+        merged.append(leaf_item)
+        merged.extend(batch[i:end])
+        return merged
+
+    def _build_subtree_np(self, batch, start, end, start_bit):
+        if end - start == 1:
+            k, v, _ = batch[start]
+            return LeafBranch(k, v)
+
+        split = first_diff_depth(batch[start][0], batch[end - 1][0], start_bit)
+        mid = self._partition_point_np(batch, start, end, split)
+
+        n_common = split - start_bit
+        cp = (1 << n_common) | key_bits(batch[start][0], start_bit, n_common)
+
+        ln = self._build_subtree_np(batch, start, mid, split)
+        rn = self._build_subtree_np(batch, mid, end, split)
+        return NodeBranch(cp, ln, rn, split)
+
+    def _insert_np(self, node, batch, start, end, start_bit):
+        if start == end:
+            return node
+
+        if node is None:
+            return self._build_subtree_np(batch, start, end, start_bit)
+
+        if isinstance(node, LeafBranch):
+            merged = self._merge_leaf_np(batch, start, end, node)
+            if len(merged) == 1 and merged[0][0] == node.key:
+                return node
+            return self._build_subtree_np(merged, 0, len(merged), start_bit)
+
+        n_path = path_len(node.path)
+        node_prefix = node.path & ((1 << n_path) - 1)
+
+        first_div = n_path
+        xor_start = key_bits(batch[start][0], start_bit, n_path) ^ node_prefix
+        if xor_start:
+            first_div = min(first_div, n_path - xor_start.bit_length())
+        xor_end = key_bits(batch[end - 1][0], start_bit, n_path) ^ node_prefix
+        if xor_end:
+            first_div = min(first_div, n_path - xor_end.bit_length())
+
+        if first_div < n_path:
+            return self._node_split_np(node, batch, start, end, start_bit, first_div)
+
+        split = start_bit + n_path
+        mid = self._partition_point_np(batch, start, end, split)
+
+        new_left = self._insert_np(node.left, batch, start, mid, split)
+        new_right = self._insert_np(node.right, batch, mid, end, split)
+
+        node.left, node.right, node._hash = new_left, new_right, None
+        return node
+
+    def _node_split_np(self, node, batch, start, end, start_bit, first_div):
+        n_path = path_len(node.path)
+        node_prefix = node.path & ((1 << n_path) - 1)
+
+        n_common = first_div
+        new_prefix = node_prefix >> (n_path - n_common) if n_common else 0
+        new_cp = (1 << n_common) | new_prefix
+        new_split = start_bit + n_common
+        old_dir = (node_prefix >> (n_path - 1 - n_common)) & 1
+
+        remaining = n_path - n_common
+        node.path = (1 << remaining) | (node_prefix & ((1 << remaining) - 1))
+
+        mid = self._partition_point_np(batch, start, end, new_split)
+
+        if old_dir == 0:
+            new_left = self._insert_np(node, batch, start, mid, new_split)
+            new_right = self._insert_np(None, batch, mid, end, new_split)
+        else:
+            new_left = self._insert_np(None, batch, start, mid, new_split)
+            new_right = self._insert_np(node, batch, mid, end, new_split)
+
+        return NodeBranch(new_cp, new_left, new_right, new_split)
+
     def batch_insert(self, batch):
         new_items = {}
         for key, data in batch:
@@ -228,7 +373,7 @@ class SparseMerkleTree:
             new_items[key] = data
 
         if not new_items:
-            return [], []
+            return [], ["S", None]
 
         # Sort the batch into tree-traversal order
         items = list(new_items.items())
@@ -249,20 +394,19 @@ class SparseMerkleTree:
             return LeafBranch(k, v)
 
         # O(1) split-point from extremes, O(log N) binary search partition
-        xor = (batch[start][0] ^ batch[end - 1][0]) >> start_bit
-        split = start_bit + (xor & -xor).bit_length() - 1
+        split = first_diff_depth(batch[start][0], batch[end - 1][0], start_bit)
 
         low, high = start, end
         while low < high:
             mid = (low + high) // 2
-            if (batch[mid][0] >> split) & 1:
+            if key_bit(batch[mid][0], split):
                 high = mid
             else:
                 low = mid + 1
         mid = low
 
         n_common = split - start_bit
-        cp = (1 << n_common) | ((batch[start][0] >> start_bit) & ((1 << n_common) - 1))
+        cp = (1 << n_common) | key_bits(batch[start][0], start_bit, n_common)
 
         ln = self._build_subtree(batch, start, mid, split, proof_out, frozen)
         rn = self._build_subtree(batch, mid, end, split, proof_out, frozen)
@@ -290,12 +434,12 @@ class SparseMerkleTree:
 
         # O(1) checks to see if the batch bounds diverge from the node path
         first_div = n_path
-        xor_start = ((batch[start][0] >> start_bit) & ((1 << n_path) - 1)) ^ node_prefix
+        xor_start = key_bits(batch[start][0], start_bit, n_path) ^ node_prefix
         if xor_start:
-            first_div = min(first_div, (xor_start & -xor_start).bit_length() - 1)
-        xor_end = ((batch[end - 1][0] >> start_bit) & ((1 << n_path) - 1)) ^ node_prefix
+            first_div = min(first_div, n_path - xor_start.bit_length())
+        xor_end = key_bits(batch[end - 1][0], start_bit, n_path) ^ node_prefix
         if xor_end:
-            first_div = min(first_div, (xor_end & -xor_end).bit_length() - 1)
+            first_div = min(first_div, n_path - xor_end.bit_length())
 
         if first_div < n_path:
             return self._node_split_proof(
@@ -307,7 +451,7 @@ class SparseMerkleTree:
         low, high = start, end
         while low < high:
             mid = (low + high) // 2
-            if (batch[mid][0] >> split) & 1:
+            if key_bit(batch[mid][0], split):
                 high = mid
             else:
                 low = mid + 1
@@ -327,17 +471,18 @@ class SparseMerkleTree:
         node_prefix = node.path & ((1 << n_path) - 1)
 
         n_common = first_div
-        new_cp = (1 << n_common) | (node_prefix & ((1 << n_common) - 1))
+        new_prefix = node_prefix >> (n_path - n_common) if n_common else 0
+        new_cp = (1 << n_common) | new_prefix
         new_split = start_bit + n_common
-        old_dir = (node_prefix >> n_common) & 1
+        old_dir = (node_prefix >> (n_path - 1 - n_common)) & 1
 
-        new_path = node.path >> n_common
-        node.path = new_path if new_path != 0 else 1
+        remaining = n_path - n_common
+        node.path = (1 << remaining) | (node_prefix & ((1 << remaining) - 1))
 
         low, high = start, end
         while low < high:
             mid = (low + high) // 2
-            if (batch[mid][0] >> new_split) & 1:
+            if key_bit(batch[mid][0], new_split):
                 high = mid
             else:
                 low = mid + 1
@@ -360,11 +505,12 @@ class SparseMerkleTree:
             if isinstance(node, LeafBranch):
                 return node if node.key == key else None
             n = path_len(node.path)
-            if ((key >> bit) & ((1 << n) - 1)) != (node.path & ((1 << n) - 1)):
+            if key_bits(key, bit, n) != (node.path & ((1 << n) - 1)):
                 return None
             bit += n
-            node = node.right if ((key >> bit) & 1) else node.left
+            node = node.right if key_bit(key, bit) else node.left
         return None
+
 
     def inclusion_cert(self, key):
         """Walk root to leaf, collecting bitmap and siblings."""
@@ -379,17 +525,17 @@ class SparseMerkleTree:
         while isinstance(node, NodeBranch):
             n = path_len(node.path)
             prefix = node.path & ((1 << n) - 1)
-            if ((key >> bit) & ((1 << n) - 1)) != prefix:
+            if key_bits(key, bit, n) != prefix:
                 return None  # key not in tree
             bit += n
             depth = node.depth
-            if (key >> bit) & 1:
+            if key_bit(key, bit):
                 siblings.append(node.left.get_hash())
                 node = node.right
             else:
                 siblings.append(node.right.get_hash())
                 node = node.left
-            bitmap |= 1 << depth
+            bitmap |= (1 << depth)
 
         if not isinstance(node, LeafBranch) or node.key != key:
             return None
@@ -479,7 +625,7 @@ def verify_inclusion(cert, root_hash, key, value):
         if j < 0:
             return False
         s = siblings[j]
-        if (key >> d) & 1:
+        if key_bit(key, d):
             h = hash_node(s, h, d)
         else:
             h = hash_node(h, s, d)
